@@ -1,28 +1,74 @@
-# AmbiStory — SemEval 2026 Task 5: Plausibility of Word Senses
+# AmbiStory Plausibility Prediction
 
-**NLP Project | University of Marburg | Summer 2026**  
-Team: Rishit Khadawala, Warren Rodrigues, Varun Shringare, Naga Suresh Bonam
+**SemEval 2026 Task 5 — Rating Plausibility of Word Senses in Ambiguous Sentences**
+
+Team: Rishit Khadawala · Warren Lloyd Rodrigues · Varun Dayanand Shringare · Naga Suresh Bonam
 
 ---
 
-## Task
-
-Predict the human-perceived plausibility of a word sense (1–5 scale) for ambiguous homonyms embedded in short 5-sentence stories. Evaluation uses Spearman correlation and Accuracy-within-StdDev.
-
 ## Approach
 
-We implement a pipeline of four models with increasing complexity:
+The task requires predicting how plausible a given word sense is in the context of a short
+five-sentence story. We frame this as a **sentence-pair regression** problem and fine-tune
+`roberta-base` on the AmbiStory training data.
 
-| Model | Type | Dev Spearman |
-|---|---|---|
-| Random | Baseline | ~0.00 |
-| Global Mean | Baseline | ~0.00 |
-| TF-IDF Nearest Neighbour | Retrieval | moderate |
-| Ridge Regression | ML | moderate |
-| Gradient Boosting | ML | moderate–good |
-| **RoBERTa-base (fine-tuned)** | **Transformer** | **best** |
+### Input representation
 
-Our main model fine-tunes `roberta-base` as a regression model. The story context and judged meaning are provided as a two-segment input to the model. The [CLS] representation is passed through a two-layer MLP regression head, and the output is sigmoid-scaled to [1, 5].
+Each sample is encoded as a sentence pair:
+
+```
+Segment A: <precontext>  <ambiguous sentence>  <ending>
+Segment B: <judged_meaning>  <example_sentence>
+```
+
+Segment A carries the full narrative context (including the optional ending, which often
+disambiguates the homonym). Segment B carries the candidate word sense being rated,
+augmented by the illustrative example sentence provided with each sample.
+
+### Model
+
+- **Backbone**: `roberta-base` (125 M parameters, 12 transformer layers)
+- **Head**: Linear(768 → 1) followed by a scaled sigmoid, mapping the output to [1, 5]
+- **Loss**: Mean Squared Error against the average human rating
+- **Optimiser**: AdamW with linear warm-up (10 % of total steps) and linear decay
+
+Using a scaled sigmoid (rather than an unconstrained linear head) keeps predictions
+within the valid annotation range throughout training and avoids the need for output
+clipping during loss computation.
+
+### Evaluation metrics
+
+| Metric | Description |
+|---|---|
+| Spearman ρ | Rank-order correlation with average human rating |
+| Acc±σ | Proportion of predictions within one standard deviation of the average (floor σ = 1) |
+
+---
+
+## Repository layout
+
+```
+.
+├── predict.py           ← evaluation harness entry point (REQUIRED)
+├── requirements.txt     ← third-party dependencies (REQUIRED)
+├── README.md
+├── data/
+│   ├── train.json
+│   └── dev.json
+├── model_checkpoint/
+│   └── roberta_ambistory.pt   ← saved after running src/train.py
+├── outputs/
+└── src/
+    ├── __init__.py
+    ├── config.py        ← all hyperparameters and paths
+    ├── data_loader.py   ← JSON loading utilities
+    ├── dataset.py       ← PyTorch Dataset + tokenisation
+    ├── evaluation.py    ← Spearman and Acc±σ metrics
+    ├── model.py         ← RoBERTa regression model
+    └── train.py         ← fine-tuning loop
+```
+
+---
 
 ## Setup
 
@@ -30,34 +76,44 @@ Our main model fine-tunes `roberta-base` as a regression model. The story contex
 pip install -r requirements.txt
 ```
 
-No external API keys are required. The HuggingFace `roberta-base` weights (~500 MB) are downloaded automatically on first run and cached locally.
-
-## Running Predictions
-
-```bash
-python predict.py data/test.json predictions.jsonl
-```
 
 ## Training
 
-Run the notebooks in order:
-
-1. `notebook1_eda_baselines.ipynb` — EDA + random/mean/TF-IDF baselines
-2. `notebook2_feature_engineering.ipynb` — Ridge + Gradient Boosting
-3. `notebook3_transformer_model.ipynb` — RoBERTa fine-tuning (produces `best_roberta_model.pt`)
-4. `notebook4_final_evaluation.ipynb` — Final comparison and predict.py testing
-
-## Repository Layout
-
+```bash
+python -m src.train
 ```
-├── predict.py               ← Submission entry point (required)
-├── requirements.txt         ← Dependencies (required)
-├── best_roberta_model.pt    ← Trained model weights
-├── notebook1_eda_baselines.ipynb
-├── notebook2_feature_engineering.ipynb
-├── notebook3_transformer_model.ipynb
-├── notebook4_final_evaluation.ipynb
-├── train.json
-├── dev.json
-└── README.md
+
+This will:
+1. Fine-tune `roberta-base` for 5 epochs on `data/train.json`
+2. Evaluate on `data/dev.json` after each epoch
+3. Save the best checkpoint (by dev Spearman ρ) to `model_checkpoint/roberta_ambistory.pt`
+
+---
+
+## Prediction
+
+```bash
+python predict.py data/dev.json outputs/dev_predictions.jsonl
 ```
+
+Each line of the output file has the format:
+```json
+{"id": "0", "prediction": 4}
+```
+
+The continuous regression score is rounded to the nearest integer and clipped to [1, 5].
+
+---
+
+## Hyperparameters
+
+| Parameter | Value |
+|---|---|
+| Pretrained model | `roberta-base` |
+| Max sequence length | 256 |
+| Batch size | 16 |
+| Epochs | 5 |
+| Learning rate | 2e-5 |
+| Weight decay | 0.01 |
+| Warm-up ratio | 10 % |
+| Random seed | 42 |

@@ -1,165 +1,165 @@
 """
-predict.py — AmbiStory SemEval 2026 Task 5 submission entry point.
+predict.py — required entry point for the SemEval 2026 Task 5 evaluation harness.
 
-Usage:
+Usage
+-----
     python predict.py <input_json> <output_jsonl>
 
-The script loads the fine-tuned RoBERTa regression model from
-'best_roberta_model.pt' and runs inference on the provided test samples.
-Falls back to the global mean predictor if the model file is not found.
+Arguments
+---------
+input_json   : path to a JSON file in AmbiStory format (same structure as
+               train.json / dev.json — a single JSON object keyed by string
+               integers).
+output_jsonl : path where predictions will be written, one JSON object per
+               line, in the format:
+                   {"id": "42", "prediction": 3}
 
-No external API keys required — the model checkpoint is loaded locally.
+Model
+-----
+The script loads the fine-tuned RoBERTa checkpoint saved by ``src/train.py``
+(default location: ``model_checkpoint/roberta_ambistory.pt``).  If no
+checkpoint is found, a warning is printed and a mean-score fallback (3.0) is
+used so the script always produces valid output.
+
+The continuous regression output is rounded to the nearest integer and clipped
+to [1, 5] before writing, as required by the task.
 """
 
-import sys
 import json
-import os
-import math
-import numpy as np
+import sys
+import warnings
+from pathlib import Path
 
-# ── Third-party imports (must be listed in requirements.txt) ──────────────
 import torch
-from torch import nn
+from torch.utils.data import DataLoader
+from transformers import RobertaTokenizer
 
-# ── Configuration ──────────────────────────────────────────────────────────
-MODEL_NAME     = 'roberta-base'
-MODEL_WEIGHTS  = os.path.join(os.path.dirname(__file__), 'best_roberta_model.pt')
-MAX_LEN        = 256
-BATCH_SIZE     = 32
-GLOBAL_MEAN    = 3.14  # fallback: global mean of training scores
+# Ensure the project root is on the path when called directly
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from src.config import (
+    BATCH_SIZE,
+    CHECKPOINT_NAME,
+    MAX_SEQ_LEN,
+    MODEL_DIR,
+    PRETRAINED_MODEL_NAME,
+    SCORE_MAX,
+    SCORE_MIN,
+)
+from src.data_loader import extract_samples
+from src.dataset import AmbiStoryDataset
+from src.model import RobertaPlausibilityRegressor, load_model_checkpoint
+from src.train import collate_fn
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Model definition — must match the architecture in notebook3
-# ══════════════════════════════════════════════════════════════════════════
-class PlausibilityRegressor(nn.Module):
+# ── Fallback prediction ───────────────────────────────────────────────────────
+
+FALLBACK_SCORE = 3  # integer mid-point; used only when no checkpoint exists
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def round_and_clip(score: float, lo: int = SCORE_MIN, hi: int = SCORE_MAX) -> int:
+    """Round a continuous score to the nearest integer and clip to [lo, hi]."""
+    return int(max(lo, min(hi, round(score))))
+
+
+def run_model_inference(
+    data:   dict,
+    device: torch.device,
+) -> dict[str, int]:
     """
-    RoBERTa-base with a two-layer regression head.
-    Input: tokenised (story_context, judged_meaning) pair.
-    Output: plausibility score in [1, 5].
-    """
+    Load the saved checkpoint and run inference on all samples in *data*.
 
-    def __init__(self, model_name: str, dropout: float = 0.1):
-        super().__init__()
-        from transformers import RobertaModel
-        self.roberta   = RobertaModel.from_pretrained(model_name)
-        hidden_size    = self.roberta.config.hidden_size  # 768
-        self.dropout   = nn.Dropout(dropout)
-        self.regressor = nn.Sequential(
-            nn.Linear(hidden_size, 128),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(128, 1),
+    Parameters
+    ----------
+    data : dict
+        AmbiStory JSON dict keyed by string integers.
+    device : torch.device
+        Device for inference (CPU or CUDA).
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping from sample ID string to integer prediction in [1, 5].
+    """
+    checkpoint_path = MODEL_DIR / CHECKPOINT_NAME
+
+    if not checkpoint_path.exists():
+        warnings.warn(
+            f"Checkpoint not found at {checkpoint_path}.  "
+            f"Using fallback score {FALLBACK_SCORE} for all samples."
         )
+        return {str(k): FALLBACK_SCORE for k in data.keys()}
 
-    def forward(self, input_ids, attention_mask):
-        outputs  = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
-        cls_repr = outputs.last_hidden_state[:, 0, :]   # [CLS] token
-        cls_repr = self.dropout(cls_repr)
-        score    = self.regressor(cls_repr).squeeze(-1)
-        # Scale sigmoid output to [1, 5]
-        score    = 1.0 + 4.0 * torch.sigmoid(score)
-        return score
+    # Load tokeniser and model
+    tokenizer = RobertaTokenizer.from_pretrained(PRETRAINED_MODEL_NAME)
+    model     = load_model_checkpoint(str(checkpoint_path), PRETRAINED_MODEL_NAME, device)
+
+    samples = extract_samples(data)
+    dataset = AmbiStoryDataset(samples, tokenizer, MAX_SEQ_LEN)
+    loader  = DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,   # preserve order for deterministic output
+        collate_fn=collate_fn,
+    )
+
+    predictions: dict[str, int] = {}
+
+    with torch.no_grad():
+        for batch in loader:
+            input_ids      = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            sample_ids     = batch["sample_id"]
+
+            scores = model(input_ids=input_ids, attention_mask=attention_mask)
+
+            for sid, score in zip(sample_ids, scores.cpu().tolist()):
+                predictions[str(sid)] = round_and_clip(score)
+
+    return predictions
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# Helpers
-# ══════════════════════════════════════════════════════════════════════════
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-def build_story_text(sample: dict) -> str:
-    """Concatenate narrative parts into a single story string."""
-    parts = [
-        sample.get('precontext', ''),
-        sample.get('sentence', ''),
-        sample.get('ending', '') or '',
-    ]
-    return ' '.join(p for p in parts if p).strip()
-
-
-def predict_with_model(model, tokenizer, samples, device):
+def main() -> None:
     """
-    Run batch inference and return a dict {sample_id: float_score}.
+    Entry point called by the evaluation harness.
+
+    Reads the input JSON, runs inference, and writes one prediction per line
+    to the output JSONL file.
     """
-    model.eval()
-    ids_list      = list(samples.keys())
-    story_texts   = [build_story_text(samples[i])          for i in ids_list]
-    meaning_texts = [samples[i].get('judged_meaning', '')  for i in ids_list]
-
-    all_preds = []
-    for start in range(0, len(ids_list), BATCH_SIZE):
-        batch_stories  = story_texts[start:start + BATCH_SIZE]
-        batch_meanings = meaning_texts[start:start + BATCH_SIZE]
-
-        encoding = tokenizer(
-            batch_stories,
-            batch_meanings,
-            max_length=MAX_LEN,
-            padding=True,
-            truncation=True,
-            return_tensors='pt',
-        )
-        input_ids   = encoding['input_ids'].to(device)
-        attn_mask   = encoding['attention_mask'].to(device)
-
-        with torch.no_grad():
-            preds = model(input_ids, attn_mask).cpu().numpy()
-
-        all_preds.extend(preds.tolist())
-
-    return {sid: score for sid, score in zip(ids_list, all_preds)}
-
-
-def predict_fallback(samples):
-    """Return the global mean for every sample (safety fallback)."""
-    print('[predict.py] WARNING: model weights not found — using global mean fallback.')
-    return {sid: GLOBAL_MEAN for sid in samples}
-
-
-def score_to_int(score: float) -> int:
-    """Round a float score in [1, 5] to the nearest integer, clamped."""
-    return max(1, min(5, round(float(score))))
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════════════════
-
-def main():
     if len(sys.argv) != 3:
-        print('Usage: python predict.py <input_json> <output_jsonl>', file=sys.stderr)
+        print(
+            "Usage: python predict.py <input_json> <output_jsonl>",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     input_path  = sys.argv[1]
     output_path = sys.argv[2]
 
-    # ── Read input ─────────────────────────────────────────────────────
-    with open(input_path, encoding='utf-8') as f:
-        samples = json.load(f)
-    print(f'[predict.py] Loaded {len(samples)} samples from {input_path}')
+    # ── Load input ────────────────────────────────────────────────────────────
+    with open(input_path, encoding="utf-8") as fh:
+        data = json.load(fh)
 
-    # ── Load model if available ────────────────────────────────────────
-    if os.path.exists(MODEL_WEIGHTS):
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f'[predict.py] Loading model on {device} ...')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        from transformers import RobertaTokenizer
-        tokenizer = RobertaTokenizer.from_pretrained(MODEL_NAME)
-        model     = PlausibilityRegressor(MODEL_NAME)
-        model.load_state_dict(torch.load(MODEL_WEIGHTS, map_location=device))
-        model.to(device)
+    # ── Inference ─────────────────────────────────────────────────────────────
+    predictions = run_model_inference(data, device)
 
-        float_preds = predict_with_model(model, tokenizer, samples, device)
-    else:
-        float_preds = predict_fallback(samples)
+    # ── Write output ──────────────────────────────────────────────────────────
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # ── Write output ──────────────────────────────────────────────────
-    with open(output_path, 'w', encoding='utf-8') as f_out:
-        for sample_id in samples:
-            prediction = score_to_int(float_preds[sample_id])
-            f_out.write(json.dumps({'id': str(sample_id), 'prediction': prediction}) + '\n')
+    with open(output_path, "w", encoding="utf-8") as fh:
+        for sample_id in data.keys():
+            prediction = predictions.get(str(sample_id), FALLBACK_SCORE)
+            line = json.dumps({"id": str(sample_id), "prediction": prediction})
+            fh.write(line + "\n")
 
-    print(f'[predict.py] Predictions written to {output_path}')
+    print(f"Predictions written to: {output_path}  ({len(data)} samples)")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
