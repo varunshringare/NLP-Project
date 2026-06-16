@@ -65,20 +65,23 @@ class AmbiStoryDataset(Dataset):
         if ending:
             parts.append(ending)
 
-        return "  ".join(parts)   # two spaces clearly separate the segments
+        return (
+            f"Context: {precontext} "
+            f"Sentence: {sentence} "
+            f"Continuation: {ending}"
+        )   
 
     @staticmethod
-    def _build_meaning_text(sample: dict[str, Any]) -> str:
-        """
-        Build the second sequence from the judged word sense and the
-        illustrative example sentence provided with each sample.
-        """
-        judged_meaning   = sample.get("judged_meaning",   "").strip()
+    def _build_meaning_text(sample):
+        homonym = sample.get("homonym", "").strip()
+        judged_meaning = sample.get("judged_meaning", "").strip()
         example_sentence = sample.get("example_sentence", "").strip()
 
-        if example_sentence:
-            return f"{judged_meaning}  {example_sentence}"
-        return judged_meaning
+        return (
+            f"Target word: {homonym}. "
+            f"Meaning: {judged_meaning}. "
+            f"Example: {example_sentence}"
+        )
 
     # ── Dataset interface ─────────────────────────────────────────────────────
 

@@ -26,7 +26,7 @@ PRETRAINED_MODEL_NAME = "roberta-base"
 
 # Maximum number of tokens fed to the transformer (including special tokens).
 # RoBERTa supports up to 512; 256 comfortably fits the AmbiStory inputs.
-MAX_SEQ_LEN = 256
+MAX_SEQ_LEN = 384
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
