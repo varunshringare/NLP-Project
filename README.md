@@ -2,7 +2,7 @@
 
 **SemEval 2026 Task 5 — Rating Plausibility of Word Senses in Ambiguous Sentences**
 
-Team: Rishit Khadawala · Warren Lloyd Rodrigues · Varun Dayanand Shringare · Naga Suresh Bonam
+Team: Rishit Khadawala · Warren Lloyd Rodrigues · Varun Dayanand Shringare
 
 ---
 
