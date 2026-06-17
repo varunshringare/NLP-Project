@@ -45,30 +45,6 @@ clipping during loss computation.
 
 ---
 
-## Repository layout
-
-```
-.
-├── predict.py           ← evaluation harness entry point (REQUIRED)
-├── requirements.txt     ← third-party dependencies (REQUIRED)
-├── README.md
-├── data/
-│   ├── train.json
-│   └── dev.json
-├── model_checkpoint/
-│   └── roberta_ambistory.pt   ← saved after running src/train.py
-├── outputs/
-└── src/
-    ├── __init__.py
-    ├── config.py        ← all hyperparameters and paths
-    ├── data_loader.py   ← JSON loading utilities
-    ├── dataset.py       ← PyTorch Dataset + tokenisation
-    ├── evaluation.py    ← Spearman and Acc±σ metrics
-    ├── model.py         ← RoBERTa regression model
-    └── train.py         ← fine-tuning loop
-```
-
----
 
 ## Setup
 

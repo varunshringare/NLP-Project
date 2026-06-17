@@ -1,20 +1,3 @@
-"""
-Fine-tuning script for the RoBERTa plausibility regressor.
-
-Training procedure
-------------------
-1. Load and tokenise train.json and dev.json.
-2. Fine-tune ``roberta-base`` with MSE loss for NUM_EPOCHS epochs.
-3. Apply a linear warm-up over WARMUP_RATIO of total steps, followed by
-   linear decay (standard schedule for transformer fine-tuning).
-4. After each epoch, evaluate on the development set and report both
-   official metrics (Spearman ρ and Acc±σ).
-5. Save the model checkpoint that achieves the best Spearman ρ on dev.
-
-Run this module directly to start training:
-
-    python -m src.train
-"""
 
 import random
 
@@ -44,11 +27,28 @@ from src.dataset import AmbiStoryDataset
 from src.evaluation import evaluate
 from src.model import RobertaPlausibilityRegressor
 
+def pairwise_rank_loss(preds, labels):
 
+    diff_pred = preds.unsqueeze(1) - preds.unsqueeze(0)
+    diff_true = labels.unsqueeze(1) - labels.unsqueeze(0)
+
+    mask = diff_true != 0
+
+    if mask.sum() == 0:
+        return torch.tensor(
+            0.0,
+            device=preds.device
+        )
+
+    target = torch.sign(diff_true)
+
+    return torch.nn.functional.soft_margin_loss(
+        diff_pred[mask],
+        target[mask]
+    )
 # ── Reproducibility ───────────────────────────────────────────────────────────
 
 def set_seed(seed: int) -> None:
-    """Fix all relevant random seeds for reproducibility."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -59,12 +59,7 @@ def set_seed(seed: int) -> None:
 # ── Custom collate to handle the non-tensor sample_id field ──────────────────
 
 def collate_fn(batch: list[dict]) -> dict:
-    """
-    Stack tensor fields and gather string sample IDs into a list.
-
-    The default PyTorch collate function cannot handle a mix of tensors and
-    plain strings, so we handle the two field types separately.
-    """
+    
     input_ids      = torch.stack([item["input_ids"]      for item in batch])
     attention_mask = torch.stack([item["attention_mask"] for item in batch])
     labels         = torch.stack([item["label"]          for item in batch])
@@ -88,14 +83,7 @@ def train_one_epoch(
     criterion:  nn.Module,
     device:     torch.device,
 ) -> float:
-    """
-    Run one full pass over the training set.
-
-    Returns
-    -------
-    float
-        Mean MSE loss over all batches in the epoch.
-    """
+    
     model.train()
     total_loss = 0.0
 
@@ -107,7 +95,17 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         predictions = model(input_ids=input_ids, attention_mask=attention_mask)
-        loss        = criterion(predictions, labels)
+        base_loss = criterion(
+            predictions,
+            labels
+        )
+
+        rank_loss = pairwise_rank_loss(
+            predictions,
+            labels
+        )
+
+        loss = base_loss + 0.2 * rank_loss
 
         loss.backward()
 
@@ -128,24 +126,7 @@ def evaluate_on_dev(
     device: torch.device,
     data:   dict,
 ) -> dict[str, float]:
-    """
-    Run inference on the development set and compute both official metrics.
-
-    Parameters
-    ----------
-    model : RobertaPlausibilityRegressor
-        Model in eval mode.
-    loader : DataLoader
-        DataLoader wrapping the dev dataset.
-    device : torch.device
-        Device for inference.
-    data : dict
-        Original dev JSON dict, used to look up per-sample standard deviations.
-
-    Returns
-    -------
-    dict with keys ``"spearman"`` and ``"accuracy_within_stdev"``.
-    """
+    
     model.eval()
     all_predictions: list[float] = []
     all_targets:     list[float] = []
@@ -175,9 +156,7 @@ def evaluate_on_dev(
 # ── Main training entry point ─────────────────────────────────────────────────
 
 def train() -> None:
-    """
-    Run the full fine-tuning pipeline and save the best model checkpoint.
-    """
+    
     set_seed(RANDOM_SEED)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -238,8 +217,12 @@ def train() -> None:
         num_training_steps=total_steps,
     )
 
-    criterion = nn.MSELoss()
-
+    criterion = nn.SmoothL1Loss(beta=0.5)
+    history = {
+    "train_loss": [],
+    "dev_spearman": [],
+    "dev_acc": []
+}
     # ── Training loop ─────────────────────────────────────────────────────────
     best_spearman    = -1.0
     checkpoint_path  = MODEL_DIR / CHECKPOINT_NAME
@@ -264,9 +247,25 @@ def train() -> None:
             best_spearman = dev_metrics["spearman"]
             torch.save(model.state_dict(), checkpoint_path)
             print(f"  ✓ New best Spearman {best_spearman:.4f} — checkpoint saved.")
+        history["train_loss"].append(train_loss)
+
+        history["dev_spearman"].append(
+            dev_metrics["spearman"]
+        )
+
+        history["dev_acc"].append(
+            dev_metrics["accuracy_within_stdev"]
+        )
 
     print(f"\nTraining complete.  Best dev Spearman: {best_spearman:.4f}")
     print(f"Checkpoint saved to: {checkpoint_path}")
+    import json
+
+    with open(
+        OUTPUT_DIR / "training_history.json",
+        "w"
+    ) as f:
+        json.dump(history, f, indent=2)
 
 
 if __name__ == "__main__":

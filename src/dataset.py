@@ -1,19 +1,3 @@
-"""
-PyTorch Dataset for the AmbiStory plausibility prediction task.
-
-Each sample is encoded as a sentence-pair input understood by RoBERTa:
-
-    <s> precontext  sentence  ending </s></s> judged_meaning </s>
-
-The first segment carries the narrative context; the second segment carries
-the candidate word sense being rated.  The tokeniser handles truncation and
-padding automatically.
-
-The regression target is the ``average`` human rating (a float in [1, 5]).
-For inference samples that lack an ``average`` field, a sentinel value of
--1.0 is returned so that the training loop can detect the absence of labels.
-"""
-
 from typing import Any, Optional
 
 import torch
@@ -22,19 +6,7 @@ from transformers import RobertaTokenizer
 
 
 class AmbiStoryDataset(Dataset):
-    """
-    Tokenised dataset for fine-tuning RoBERTa on the AmbiStory task.
-
-    Parameters
-    ----------
-    samples : list[dict]
-        List of sample dicts as produced by
-        :func:`src.data_loader.extract_samples`.
-    tokenizer : RobertaTokenizer
-        Tokeniser instance (already loaded from the pretrained checkpoint).
-    max_seq_len : int
-        Maximum total token length (including special tokens).
-    """
+    
 
     def __init__(
         self,
@@ -50,13 +22,7 @@ class AmbiStoryDataset(Dataset):
 
     @staticmethod
     def _build_context_text(sample: dict[str, Any]) -> str:
-        """
-        Concatenate the three narrative parts into a single context string.
-
-        The ending field is optional (may be an empty string or absent); when
-        present it often implies a specific word sense, so it is always
-        included.
-        """
+        
         precontext = sample.get("precontext", "").strip()
         sentence   = sample.get("sentence",   "").strip()
         ending     = sample.get("ending",     "").strip()
@@ -89,21 +55,29 @@ class AmbiStoryDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        """
-        Tokenise a single sample and return a dict of tensors.
-
-        Returns
-        -------
-        dict with keys:
-            ``input_ids``      – token IDs, shape (max_seq_len,)
-            ``attention_mask`` – 1 for real tokens, 0 for padding, shape (max_seq_len,)
-            ``label``          – scalar float tensor; -1.0 when no label is available
-            ``sample_id``      – string sample ID (not a tensor; used for output)
-        """
+        
         sample = self.samples[index]
 
-        context_text = self._build_context_text(sample)
-        meaning_text = self._build_meaning_text(sample)
+        context_text = f"""
+        Target Word: {sample['homonym']}
+
+        Story Context:
+        {sample['precontext']}
+
+        Ambiguous Sentence:
+        {sample['sentence']}
+
+        Story Continuation:
+        {sample['ending']}
+        """
+
+        meaning_text = f"""
+        Candidate Meaning:
+        {sample['judged_meaning']}
+
+        Example Usage:
+        {sample['example_sentence']}
+        """
 
         encoding = self.tokenizer(
             context_text,

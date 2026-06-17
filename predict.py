@@ -1,29 +1,4 @@
-"""
-predict.py — required entry point for the SemEval 2026 Task 5 evaluation harness.
 
-Usage
------
-    python predict.py <input_json> <output_jsonl>
-
-Arguments
----------
-input_json   : path to a JSON file in AmbiStory format (same structure as
-               train.json / dev.json — a single JSON object keyed by string
-               integers).
-output_jsonl : path where predictions will be written, one JSON object per
-               line, in the format:
-                   {"id": "42", "prediction": 3}
-
-Model
------
-The script loads the fine-tuned RoBERTa checkpoint saved by ``src/train.py``
-(default location: ``model_checkpoint/roberta_ambistory.pt``).  If no
-checkpoint is found, a warning is printed and a mean-score fallback (3.0) is
-used so the script always produces valid output.
-
-The continuous regression output is rounded to the nearest integer and clipped
-to [1, 5] before writing, as required by the task.
-"""
 
 import json
 import sys
@@ -60,7 +35,6 @@ FALLBACK_SCORE = 3  # integer mid-point; used only when no checkpoint exists
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def round_and_clip(score: float, lo: int = SCORE_MIN, hi: int = SCORE_MAX) -> int:
-    """Round a continuous score to the nearest integer and clip to [lo, hi]."""
     return int(max(lo, min(hi, round(score))))
 
 
@@ -68,21 +42,7 @@ def run_model_inference(
     data:   dict,
     device: torch.device,
 ) -> dict[str, int]:
-    """
-    Load the saved checkpoint and run inference on all samples in *data*.
-
-    Parameters
-    ----------
-    data : dict
-        AmbiStory JSON dict keyed by string integers.
-    device : torch.device
-        Device for inference (CPU or CUDA).
-
-    Returns
-    -------
-    dict[str, int]
-        Mapping from sample ID string to integer prediction in [1, 5].
-    """
+    
     checkpoint_path = MODEL_DIR / CHECKPOINT_NAME
 
     if not checkpoint_path.exists():
@@ -124,12 +84,6 @@ def run_model_inference(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """
-    Entry point called by the evaluation harness.
-
-    Reads the input JSON, runs inference, and writes one prediction per line
-    to the output JSONL file.
-    """
     if len(sys.argv) != 3:
         print(
             "Usage: python predict.py <input_json> <output_jsonl>",

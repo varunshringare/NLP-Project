@@ -1,10 +1,4 @@
-"""
-Central configuration for the AmbiStory plausibility prediction pipeline.
 
-All hyperparameters, file paths, and model settings are defined here so that
-the rest of the codebase can import constants rather than scattering magic
-numbers across files.
-"""
 
 from pathlib import Path
 
