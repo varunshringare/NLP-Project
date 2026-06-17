@@ -1,7 +1,10 @@
 
 import torch
 import torch.nn as nn
-from transformers import RobertaModel
+from transformers import RobertaConfig, RobertaModel
+from transformers import logging
+
+logging.set_verbosity_error()
 
 
 class RobertaPlausibilityRegressor(nn.Module):
@@ -20,7 +23,15 @@ class RobertaPlausibilityRegressor(nn.Module):
         self.score_range = score_max - score_min  # 4.0 for the 1-5 scale
 
         # Pretrained transformer backbone
-        self.roberta = RobertaModel.from_pretrained(pretrained_name)
+        config = RobertaConfig.from_pretrained(
+            pretrained_name,
+            add_pooling_layer=False
+        )
+
+        self.roberta = RobertaModel.from_pretrained(
+            pretrained_name,
+            config=config
+        )
 
         hidden_size = self.roberta.config.hidden_size  # 768 for roberta-base
 
